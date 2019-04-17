@@ -243,8 +243,14 @@ defmodule X509.RDNSequence do
 
   defp attr_to_string({:AttributeTypeAndValue, _, value} = attr) when is_binary(value) do
     # FIXME: avoid calls to undocumented functions in :public_key app
-    attr
-    |> :pubkey_cert_records.transform(:decode)
+    {:AttributeTypeAndValue, oid, new_value} =
+      attr |> :pubkey_cert_records.transform(:decode)
+
+    if is_binary(new_value) do
+      {:AttributeTypeAndValue, oid, to_charlist(new_value)}
+    else
+      {:AttributeTypeAndValue, oid, new_value}
+    end
     |> attr_to_string()
   end
 
