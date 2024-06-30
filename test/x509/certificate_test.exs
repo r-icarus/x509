@@ -116,7 +116,7 @@ defmodule X509.CertificateTest do
                |> X509.Certificate.extension(:key_usage)
                |> extension(:extnValue)
 
-      assert [rfc822Name: 'end.entity@example.com'] =
+      assert [rfc822Name: ~c"end.entity@example.com"] =
                cert2
                |> X509.Certificate.extension(:subject_alt_name)
                |> extension(:extnValue)
@@ -224,8 +224,7 @@ defmodule X509.CertificateTest do
     assert {:Extension, oid(:"id-ce-authorityKeyIdentifier"), false, _} =
              X509.Certificate.extension(context.selfsigned_rsa, :authority_key_identifier)
 
-    assert {:Extension, oid(:"id-ce-basicConstraints"), false,
-            {:BasicConstraints, true, :asn1_NOVALUE}} =
+    assert {:Extension, oid(:"id-ce-basicConstraints"), true, {:BasicConstraints, true, 1}} =
              X509.Certificate.extension(context.selfsigned_rsa, :basic_constraints)
   end
 

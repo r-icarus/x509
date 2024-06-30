@@ -25,9 +25,8 @@ defmodule X509.PrivateKey do
       true
 
   Note that in practice it is not a good idea to directly encrypt a message
-  with asymmetrical cryptography, and signatures should be calculated over
-  message hashes rather than raw messages. The examples above are deliberate
-  over-simpliciations intended to highlight the `:crypto` API calls.
+  with asymmetrical cryptography. The examples above are deliberate
+  over-simpliciations intended to highlight the `:public_key` API calls.
   """
 
   @typedoc "RSA or EC private key"
@@ -37,7 +36,7 @@ defmodule X509.PrivateKey do
   @default_e 65537
 
   @doc """
-  Generates a new private RSA private key. To derive the public key, use
+  Generates a new RSA private key. To derive the public key, use
   `X509.PublicKey.derive/1`.
 
   The key length in bits must be specified as an integer (minimum 256 bits).
@@ -52,17 +51,17 @@ defmodule X509.PrivateKey do
   end
 
   @doc """
-  Generates a new private EC private key. To derive the public key, use
+  Generates a new EC private key. To derive the public key, use
   `X509.PublicKey.derive/1`.
 
-  The second parameter must specify a named curve. The curve can be specified
+  The first parameter must specify a named curve. The curve can be specified
   as an atom or an OID tuple.
 
   Note that this function uses Erlang/OTP's `:public_key` application, which
   does not support all curve names returned by the `:crypto.ec_curves/0`
   function. In particular, the NIST Prime curves must be selected by their
   SECG id, e.g. NIST P-256 is `:secp256r1` rather than `:prime256v1`. Please
-  refer to [RFC4492 appendix A](https://tools.ietf.org/search/rfc4492#appendix-A)
+  refer to [RFC4492 appendix A](https://www.rfc-editor.org/rfc/rfc4492.html#appendix-A)
   for a mapping table.
   """
   @spec new_ec(:crypto.ec_named_curve() | :public_key.oid()) :: :public_key.ec_private_key()
@@ -145,6 +144,8 @@ defmodule X509.PrivateKey do
 
     * `:wrap` - Wrap the private key in a PKCS#8 PrivateKeyInfo container
       (default: `false`)
+    * `:password` - If a password is specified, the private key is encrypted
+      using 3DES; to password will be required to decode the PEM entry
   """
   @spec to_pem(t(), Keyword.t()) :: String.t()
   def to_pem(private_key, opts \\ []) do
@@ -154,7 +155,7 @@ defmodule X509.PrivateKey do
     else
       private_key
     end
-    |> pem_entry_encode()
+    |> pem_entry_encode(Keyword.get(opts, :password))
     |> List.wrap()
     |> :public_key.pem_encode()
   end
@@ -235,7 +236,7 @@ defmodule X509.PrivateKey do
   def from_pem(pem, opts \\ []) do
     password =
       opts
-      |> Keyword.get(:password, '')
+      |> Keyword.get(:password, ~c"")
       |> to_charlist()
 
     pem
@@ -277,15 +278,35 @@ defmodule X509.PrivateKey do
     :public_key.der_encode(:PrivateKeyInfo, private_key_info)
   end
 
-  defp pem_entry_encode(rsa_private_key() = rsa_private_key) do
+  defp pem_entry_encode(rsa_private_key() = rsa_private_key, nil) do
     :public_key.pem_entry_encode(:RSAPrivateKey, rsa_private_key)
   end
 
-  defp pem_entry_encode(ec_private_key() = ec_private_key) do
+  defp pem_entry_encode(ec_private_key() = ec_private_key, nil) do
     :public_key.pem_entry_encode(:ECPrivateKey, ec_private_key)
   end
 
-  defp pem_entry_encode(private_key_info() = private_key_info) do
+  defp pem_entry_encode(private_key_info() = private_key_info, nil) do
     :public_key.pem_entry_encode(:PrivateKeyInfo, private_key_info)
+  end
+
+  defp pem_entry_encode(private_key, password) when is_binary(password) do
+    pem_entry_encode(private_key, to_charlist(password))
+  end
+
+  defp pem_entry_encode(rsa_private_key() = rsa_private_key, password) do
+    :public_key.pem_entry_encode(:RSAPrivateKey, rsa_private_key, {cipher_info(), password})
+  end
+
+  defp pem_entry_encode(ec_private_key() = ec_private_key, password) do
+    :public_key.pem_entry_encode(:ECPrivateKey, ec_private_key, {cipher_info(), password})
+  end
+
+  defp pem_entry_encode(private_key_info() = private_key_info, password) do
+    :public_key.pem_entry_encode(:PrivateKeyInfo, private_key_info, {cipher_info(), password})
+  end
+
+  defp cipher_info() do
+    {~c"DES-EDE3-CBC", :crypto.strong_rand_bytes(8)}
   end
 end

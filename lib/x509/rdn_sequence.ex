@@ -1,6 +1,6 @@
 defmodule X509.RDNSequence do
   @moduledoc """
-  Convenience functions for creating `:rdnSquence` tuples, as defined in
+  Convenience functions for creating `:rdnSequence` tuples, as defined in
   Erlang's `:public_key` module as the `issuer_name()` type, and representing
   the X.509 RDNSequence type. RDNSequences are primarily used for the Subject
   and Issuer fields of certificates, as well as the Subject field of CSRs.
@@ -55,7 +55,7 @@ defmodule X509.RDNSequence do
   @type attr_list :: [attr]
 
   @doc """
-  Creates a new `:rdnSquence` tuple.
+  Creates a new `:rdnSequence` tuple.
 
   The value can be specified in one of the following formats:
 
@@ -138,7 +138,7 @@ defmodule X509.RDNSequence do
   end
 
   @doc """
-  Converts an `:rdnSquence` tuple to a human readable string, in hierarchical
+  Converts an `:rdnSequence` tuple to a human readable string, in hierarchical
   format.
 
   ## Examples:
@@ -156,7 +156,7 @@ defmodule X509.RDNSequence do
   end
 
   @doc """
-  Extracts the values for the specified attributes from a `:rdnSquence` tuple.
+  Extracts the values for the specified attributes from a `:rdnSequence` tuple.
 
   The attribute type may be specified as an attribute name (long or short form,
   as a string, or long from as an atom) or an OID tuple. Refer to the
@@ -286,6 +286,8 @@ defmodule X509.RDNSequence do
   defp attr_value_to_string({:utf8String, value}), do: value
   defp attr_value_to_string({:printableString, value}), do: List.to_string(value)
   defp attr_value_to_string({:ia5String, value}), do: List.to_string(value)
+  # FIXME: for 8-bit teletexString this requires mapping (see RFC1345)
+  defp attr_value_to_string({:teletexString, value}), do: List.to_string(value)
   defp attr_value_to_string(value), do: List.to_string(value)
 
   # Splits an attribute in the form of "type=value" into a {type, value} tuple
@@ -305,7 +307,7 @@ defmodule X509.RDNSequence do
   defp new_attr({"ST", value}), do: new_attr({:stateOrProvinceName, value})
   defp new_attr({"CN", value}), do: new_attr({:commonName, value})
   defp new_attr({"L", value}), do: new_attr({:localityName, value})
-  defp new_attr({"SN", value}), do: new_attr({:surName, value})
+  defp new_attr({"SN", value}), do: new_attr({:surname, value})
   defp new_attr({"GN", value}), do: new_attr({:givenName, value})
   defp new_attr({"DC", value}), do: new_attr({:domainComponent, value})
   defp new_attr({"E", value}), do: new_attr({:emailAddress, value})
@@ -409,7 +411,7 @@ defmodule X509.RDNSequence do
                      ?A..?Z |> Enum.into([]),
                      ?a..?z |> Enum.into([]),
                      ?0..?9 |> Enum.into([]),
-                     ' \'()+,-./:=?'
+                     ~c" '()+,-./:=?"
                    ]
                    |> List.flatten()
 

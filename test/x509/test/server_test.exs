@@ -9,13 +9,14 @@ defmodule X509.Test.ServerTest do
   # client, `httpc`. To adapt for other clients, update the `request/2`
   # function, as described in the comments.
   #
-  # Add `log_alert: true` to the call to request/2 to get more information on
-  # a failing scenario, e.g.:
+  # Add `log_level: :debug` (OTP >=22) or `log_alert: true` (older OTP
+  # versions)to the call to request/2 to get more information on a failing
+  # scenario, e.g.:
   #
   #   ```
   #   request('https://valid.#{context.suite.domain}:#{context.port}/',
   #     cacertfile: context.cacertfile,
-  #     log_alert: true
+  #     log_level: :debug
   #   )
   #   ```
   #
@@ -24,7 +25,6 @@ defmodule X509.Test.ServerTest do
 
   use ExUnit.Case
   import X509.TestHelper
-  require Logger
 
   #
   # Client under test
@@ -41,18 +41,23 @@ defmodule X509.Test.ServerTest do
     # root CAs that were passed in via the `cacerts` option; to get the
     # connection to succeed, CRL checks have to be limited to the peer
     # certificate only
-    crl_check = (Keyword.has_key?(opts, :cacerts) && :peer) || true
+    # crl_check = (Keyword.has_key?(opts, :cacerts) && :peer) || true
+
+    # ISSUE: CRL checks with OTP 23.2 and 23.1 are broken when passing CA
+    # trust store as a list of DER binaries:
+    # https://github.com/erlang/otp/issues/4589
+    crl_check = !Keyword.has_key?(opts, :cacerts)
 
     # ISSUE: `httpc` requires explicit opt-in to peer certificate verification,
     # with HTTPS connections to misconfigured or malicious servers succeeding
     # without warning when using the default settings!
-    ssl_defaults = [
-      log_alert: false,
-      verify: :verify_peer,
-      depth: 2,
-      crl_check: crl_check,
-      crl_cache: {:ssl_crl_cache, {:internal, [http: 30_000]}}
-    ]
+    ssl_defaults =
+      [
+        verify: :verify_peer,
+        depth: 2,
+        crl_check: crl_check,
+        crl_cache: {:ssl_crl_cache, {:internal, [http: 30_000]}}
+      ] ++ X509.Test.Server.log_opts()
 
     ssl_opts =
       cond do
@@ -92,16 +97,18 @@ defmodule X509.Test.ServerTest do
 
     test "valid", context do
       assert {:ok, _} =
-               request('https://valid.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
     end
 
     test "valid-missing-chain", context do
-      assert {:error, {:tls_alert, 'unknown ca'}} =
-               request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "unknown"
     end
 
     test "valid-missing-chain with intermediate in cacerts", context do
@@ -109,38 +116,46 @@ defmodule X509.Test.ServerTest do
       # intermediate CAs from the provided trust store
       if version(:ssl) >= [9, 0, 2] do
         assert {:ok, _} =
-                 request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile_with_chain
                  )
       end
     end
 
     test "valid-expired-chain", context do
-      assert {:error, {:tls_alert, 'certificate expired'}} =
-               request('https://valid-expired-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-expired-chain.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "expired"
     end
 
     test "valid-revoked-chain", context do
-      assert {:error, {:tls_alert, 'certificate revoked'}} =
-               request('https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "revoked"
     end
 
     test "valid-wrong-key", context do
-      assert {:error, {:tls_alert, 'decrypt error'}} =
-               request('https://valid-wrong-key.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-wrong-key.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ ~r/decrypt|CertificateVerify/
     end
 
     test "valid-wrong-host", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
-               request('https://valid-wrong-host.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-wrong-host.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     # ISSUE: this test case fails, because `public_key` does not explore
@@ -152,7 +167,7 @@ defmodule X509.Test.ServerTest do
     @tag :known_to_fail
     test "valid-cross-signed, cross-signed CA", context do
       assert {:ok, _} =
-               request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
     end
@@ -161,7 +176,7 @@ defmodule X509.Test.ServerTest do
       # TODO: this only works with 'best effort' CRL checks; this may be an
       # issue with the test suite
       assert {:ok, _} =
-               request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.alternate_cacertfile,
                  crl_check: :best_effort
                )
@@ -173,45 +188,86 @@ defmodule X509.Test.ServerTest do
       # versions this test would fail
       if version(:public_key) >= [1, 6] do
         assert {:ok, _} =
-                 request('https://valid.wildcard.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid.wildcard.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
       end
     end
 
     test "wildcard, bare domain", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
-               request('https://wildcard.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://wildcard.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     test "invalid.subdomain.wildcard", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
+      assert {:error, {:tls_alert, reason}} =
                request(
-                 'https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/',
+                 ~c"https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     test "expired", context do
-      assert {:error, {:tls_alert, 'certificate expired'}} =
-               request('https://expired.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://expired.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "expired"
     end
 
     test "revoked", context do
-      assert {:error, {:tls_alert, 'certificate revoked'}} =
-               request('https://revoked.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://revoked.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
                )
+
+      assert inspect(reason) =~ "revoked"
     end
 
     test "selfsigned", context do
-      assert {:error, {:tls_alert, 'bad certificate'}} =
-               request('https://selfsigned.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://selfsigned.#{context.suite.domain}:#{context.port}/",
                  cacertfile: context.cacertfile
+               )
+
+      assert inspect(reason) =~ "bad"
+    end
+
+    test "client-cert", context do
+      assert {:error, error} =
+               request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                 cacertfile: context.cacertfile
+               )
+
+      case error do
+        {:tls_alert, reason} ->
+          assert inspect(reason) =~ "handshake"
+
+        {:ssl_error, _sock, {:tls_alert, reason}} ->
+          assert {:certificate_required, _message} = reason
+
+        _else ->
+          # ISSUE: it seems that with recent OTP versions, the TLS handshake
+          # sometimes fails with a socket error (socket_closed_remotely, einval)
+          # rather than a TLS alert; perhaps this happens when a socket write
+          # fails before the alert has been read. As a result we can't fail the
+          # test un unexpected responses
+          # flunk("Expected a handshake error, got #{inspect(error)}")
+          :ignore
+      end
+
+      assert {:ok, _} =
+               request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                 cacerts: context.suite.chain ++ context.suite.cacerts,
+                 cert: X509.Certificate.to_der(context.suite.client),
+                 key: {:RSAPrivateKey, X509.PrivateKey.to_der(context.suite.client_key)}
                )
     end
   end
@@ -221,16 +277,18 @@ defmodule X509.Test.ServerTest do
 
     test "valid", context do
       assert {:ok, _} =
-               request('https://valid.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
     end
 
     test "valid-missing-chain", context do
-      assert {:error, {:tls_alert, 'unknown ca'}} =
-               request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "unknown"
     end
 
     test "valid-missing-chain with intermediate in cacerts", context do
@@ -242,7 +300,7 @@ defmodule X509.Test.ServerTest do
         # issuer of the peer certificate in this case is taken from `cacerts`,
         # no CRL checks can be performed
         assert {:ok, _} =
-                 request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts ++ context.suite.chain,
                    crl_check: false
                  )
@@ -250,34 +308,42 @@ defmodule X509.Test.ServerTest do
     end
 
     test "valid-expired-chain", context do
-      assert {:error, {:tls_alert, 'certificate expired'}} =
-               request('https://valid-expired-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-expired-chain.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "expired"
     end
 
     # ISSUE: this test case fails, because `ssl` does not handle CRL checks on
     # certificates issued by CAs passed in through `cacerts`
     @tag :known_to_fail
     test "valid-revoked-chain", context do
-      assert {:error, {:tls_alert, 'certificate revoked'}} =
-               request('https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "revoked"
     end
 
     test "valid-wrong-key", context do
-      assert {:error, {:tls_alert, 'decrypt error'}} =
-               request('https://valid-wrong-key.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-wrong-key.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ ~r/decrypt|CertificateVerify/
     end
 
     test "valid-wrong-host", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
-               request('https://valid-wrong-host.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://valid-wrong-host.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     # ISSUE: this test case fails, because `public_key` does not explore
@@ -289,7 +355,7 @@ defmodule X509.Test.ServerTest do
     @tag :known_to_fail
     test "valid-cross-signed, cross-signed CA", context do
       assert {:ok, _} =
-               request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
     end
@@ -298,7 +364,7 @@ defmodule X509.Test.ServerTest do
       # TODO: this does not work with CRL checks at all, not even peer-only;
       # this may be an issue with the test suite
       assert {:ok, _} =
-               request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+               request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.alternate_cacerts,
                  crl_check: false
                )
@@ -310,45 +376,90 @@ defmodule X509.Test.ServerTest do
       # versions this test would fail
       if version(:public_key) >= [1, 6] do
         assert {:ok, _} =
-                 request('https://valid.wildcard.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid.wildcard.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
       end
     end
 
     test "wildcard, bare domain", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
-               request('https://wildcard.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://wildcard.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     test "invalid.subdomain.wildcard", context do
-      assert {:error, {:tls_alert, 'handshake failure'}} =
+      assert {:error, {:tls_alert, reason}} =
                request(
-                 'https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/',
+                 ~c"https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "handshake"
     end
 
     test "expired", context do
-      assert {:error, {:tls_alert, 'certificate expired'}} =
-               request('https://expired.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://expired.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "expired"
     end
 
+    # ISSUE: CRL checks with OTP 23.2 and 23.1 are broken when passing CA
+    # trust store as a list of DER binaries:
+    # https://github.com/erlang/otp/issues/4589
+    @tag :known_to_fail
     test "revoked", context do
-      assert {:error, {:tls_alert, 'certificate revoked'}} =
-               request('https://revoked.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://revoked.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
                )
+
+      assert inspect(reason) =~ "revoked"
     end
 
     test "selfsigned", context do
-      assert {:error, {:tls_alert, 'bad certificate'}} =
-               request('https://selfsigned.#{context.suite.domain}:#{context.port}/',
+      assert {:error, {:tls_alert, reason}} =
+               request(~c"https://selfsigned.#{context.suite.domain}:#{context.port}/",
                  cacerts: context.suite.cacerts
+               )
+
+      assert inspect(reason) =~ "bad"
+    end
+
+    test "client-cert", context do
+      assert {:error, error} =
+               request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                 cacerts: context.suite.cacerts
+               )
+
+      case error do
+        {:tls_alert, reason} ->
+          assert inspect(reason) =~ "handshake"
+
+        {:ssl_error, _sock, {:tls_alert, reason}} ->
+          assert {:certificate_required, _message} = reason
+
+        _else ->
+          # ISSUE: it seems that with recent OTP versions, the TLS handshake
+          # sometimes fails with a socket error (socket_closed_remotely, einval)
+          # rather than a TLS alert; perhaps this happens when a socket write
+          # fails before the alert has been read. As a result we can't fail the
+          # test un unexpected responses
+          # flunk("Expected a handshake error, got #{inspect(error)}")
+          :ignore
+      end
+
+      assert {:ok, _} =
+               request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                 cacerts: context.suite.chain ++ context.suite.cacerts,
+                 cert: X509.Certificate.to_der(context.suite.client),
+                 key: {:RSAPrivateKey, X509.PrivateKey.to_der(context.suite.client_key)}
                )
     end
   end
@@ -360,16 +471,18 @@ defmodule X509.Test.ServerTest do
 
       test "valid", context do
         assert {:ok, _} =
-                 request('https://valid.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
       end
 
       test "valid-missing-chain", context do
-        assert {:error, {:tls_alert, 'unknown ca'}} =
-                 request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "unknown"
       end
 
       test "valid-missing-chain with intermediate in cacerts", context do
@@ -377,38 +490,47 @@ defmodule X509.Test.ServerTest do
         # intermediate CAs from the provided trust store
         if version(:ssl) >= [9, 0, 2] do
           assert {:ok, _} =
-                   request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+                   request(
+                     ~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                      cacertfile: context.cacertfile_with_chain
                    )
         end
       end
 
       test "valid-expired-chain", context do
-        assert {:error, {:tls_alert, 'certificate expired'}} =
-                 request('https://valid-expired-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-expired-chain.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "expired"
       end
 
       test "valid-revoked-chain", context do
-        assert {:error, {:tls_alert, 'certificate revoked'}} =
-                 request('https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "revoked"
       end
 
       test "valid-wrong-key", context do
-        assert {:error, {:tls_alert, 'decrypt error'}} =
-                 request('https://valid-wrong-key.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-wrong-key.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ ~r/decrypt|CertificateVerify/
       end
 
       test "valid-wrong-host", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
-                 request('https://valid-wrong-host.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-wrong-host.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       # ISSUE: this test case fails, because `public_key` does not explore
@@ -420,7 +542,7 @@ defmodule X509.Test.ServerTest do
       @tag :known_to_fail
       test "valid-cross-signed, cross-signed CA", context do
         assert {:ok, _} =
-                 request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
       end
@@ -429,7 +551,7 @@ defmodule X509.Test.ServerTest do
         # TODO: this only works with 'best effort' CRL checks; this may be an
         # issue with the test suite
         assert {:ok, _} =
-                 request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.alternate_cacertfile,
                    crl_check: :best_effort
                  )
@@ -441,45 +563,86 @@ defmodule X509.Test.ServerTest do
         # versions this test would fail
         if version(:public_key) >= [1, 6] do
           assert {:ok, _} =
-                   request('https://valid.wildcard.#{context.suite.domain}:#{context.port}/',
+                   request(~c"https://valid.wildcard.#{context.suite.domain}:#{context.port}/",
                      cacertfile: context.cacertfile
                    )
         end
       end
 
       test "wildcard, bare domain", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
-                 request('https://wildcard.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://wildcard.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       test "invalid.subdomain.wildcard", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
+        assert {:error, {:tls_alert, reason}} =
                  request(
-                   'https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/',
+                   ~c"https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       test "expired", context do
-        assert {:error, {:tls_alert, 'certificate expired'}} =
-                 request('https://expired.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://expired.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "expired"
       end
 
       test "revoked", context do
-        assert {:error, {:tls_alert, 'certificate revoked'}} =
-                 request('https://revoked.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://revoked.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
                  )
+
+        assert inspect(reason) =~ "revoked"
       end
 
       test "selfsigned", context do
-        assert {:error, {:tls_alert, 'bad certificate'}} =
-                 request('https://selfsigned.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://selfsigned.#{context.suite.domain}:#{context.port}/",
                    cacertfile: context.cacertfile
+                 )
+
+        assert inspect(reason) =~ "bad"
+      end
+
+      test "client-cert", context do
+        assert {:error, error} =
+                 request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                   cacertfile: context.cacertfile
+                 )
+
+        case error do
+          {:tls_alert, reason} ->
+            assert inspect(reason) =~ "handshake"
+
+          {:ssl_error, _sock, {:tls_alert, reason}} ->
+            assert {:certificate_required, _message} = reason
+
+          _else ->
+            # ISSUE: it seems that with recent OTP versions, the TLS handshake
+            # sometimes fails with a socket error (socket_closed_remotely, einval)
+            # rather than a TLS alert; perhaps this happens when a socket write
+            # fails before the alert has been read. As a result we can't fail the
+            # test un unexpected responses
+            # flunk("Expected a handshake error, got #{inspect(error)}")
+            :ignore
+        end
+
+        assert {:ok, _} =
+                 request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                   cacerts: context.suite.chain ++ context.suite.cacerts,
+                   cert: X509.Certificate.to_der(context.suite.client),
+                   key: {:ECPrivateKey, X509.PrivateKey.to_der(context.suite.client_key)}
                  )
       end
     end
@@ -489,16 +652,18 @@ defmodule X509.Test.ServerTest do
 
       test "valid", context do
         assert {:ok, _} =
-                 request('https://valid.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
       end
 
       test "valid-missing-chain", context do
-        assert {:error, {:tls_alert, 'unknown ca'}} =
-                 request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "unknown"
       end
 
       test "valid-missing-chain with intermediate in cacerts", context do
@@ -510,7 +675,8 @@ defmodule X509.Test.ServerTest do
           # issuer of the peer certificate in this case is taken from `cacerts`,
           # no CRL checks can be performed
           assert {:ok, _} =
-                   request('https://valid-missing-chain.#{context.suite.domain}:#{context.port}/',
+                   request(
+                     ~c"https://valid-missing-chain.#{context.suite.domain}:#{context.port}/",
                      cacerts: context.suite.cacerts ++ context.suite.chain,
                      crl_check: false
                    )
@@ -518,34 +684,42 @@ defmodule X509.Test.ServerTest do
       end
 
       test "valid-expired-chain", context do
-        assert {:error, {:tls_alert, 'certificate expired'}} =
-                 request('https://valid-expired-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-expired-chain.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "expired"
       end
 
       # ISSUE: this test case fails, because `ssl` does not handle CRL checks on
       # certificates issued by CAs passed in through `cacerts`
       @tag :known_to_fail
       test "valid-revoked-chain", context do
-        assert {:error, {:tls_alert, 'certificate revoked'}} =
-                 request('https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-revoked-chain.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "revoked"
       end
 
       test "valid-wrong-key", context do
-        assert {:error, {:tls_alert, 'decrypt error'}} =
-                 request('https://valid-wrong-key.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-wrong-key.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ ~r/decrypt|CertificateVerify/
       end
 
       test "valid-wrong-host", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
-                 request('https://valid-wrong-host.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://valid-wrong-host.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       # ISSUE: this test case fails, because `public_key` does not explore
@@ -557,7 +731,7 @@ defmodule X509.Test.ServerTest do
       @tag :known_to_fail
       test "valid-cross-signed, cross-signed CA", context do
         assert {:ok, _} =
-                 request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
       end
@@ -566,7 +740,7 @@ defmodule X509.Test.ServerTest do
         # TODO: this does not work with CRL checks at all, not even peer-only;
         # this may be an issue with the test suite
         assert {:ok, _} =
-                 request('https://valid-cross-signed.#{context.suite.domain}:#{context.port}/',
+                 request(~c"https://valid-cross-signed.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.alternate_cacerts,
                    crl_check: false
                  )
@@ -578,50 +752,95 @@ defmodule X509.Test.ServerTest do
         # versions this test would fail
         if version(:public_key) >= [1, 6] do
           assert {:ok, _} =
-                   request('https://valid.wildcard.#{context.suite.domain}:#{context.port}/',
+                   request(~c"https://valid.wildcard.#{context.suite.domain}:#{context.port}/",
                      cacerts: context.suite.cacerts
                    )
         end
       end
 
       test "wildcard, bare domain", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
-                 request('https://wildcard.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://wildcard.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       test "invalid.subdomain.wildcard", context do
-        assert {:error, {:tls_alert, 'handshake failure'}} =
+        assert {:error, {:tls_alert, reason}} =
                  request(
-                   'https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/',
+                   ~c"https://invalid.subdomain.wildcard.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "handshake"
       end
 
       test "expired", context do
-        assert {:error, {:tls_alert, 'certificate expired'}} =
-                 request('https://expired.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://expired.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "expired"
       end
 
+      # ISSUE: CRL checks with OTP 23.2 and 23.1 are broken when passing CA
+      # trust store as a list of DER binaries:
+      # https://github.com/erlang/otp/issues/4589
+      @tag :known_to_fail
       test "revoked", context do
-        assert {:error, {:tls_alert, 'certificate revoked'}} =
-                 request('https://revoked.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://revoked.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
                  )
+
+        assert inspect(reason) =~ "revoked"
       end
 
       test "selfsigned", context do
-        assert {:error, {:tls_alert, 'bad certificate'}} =
-                 request('https://selfsigned.#{context.suite.domain}:#{context.port}/',
+        assert {:error, {:tls_alert, reason}} =
+                 request(~c"https://selfsigned.#{context.suite.domain}:#{context.port}/",
                    cacerts: context.suite.cacerts
+                 )
+
+        assert inspect(reason) =~ "bad"
+      end
+
+      test "client-cert", context do
+        assert {:error, error} =
+                 request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                   cacerts: context.suite.cacerts
+                 )
+
+        case error do
+          {:tls_alert, reason} ->
+            assert inspect(reason) =~ "handshake"
+
+          {:ssl_error, _sock, {:tls_alert, reason}} ->
+            assert {:certificate_required, _message} = reason
+
+          _else ->
+            # ISSUE: it seems that with recent OTP versions, the TLS handshake
+            # sometimes fails with a socket error (socket_closed_remotely, einval)
+            # rather than a TLS alert; perhaps this happens when a socket write
+            # fails before the alert has been read. As a result we can't fail the
+            # test un unexpected responses
+            # flunk("Expected a handshake error, got #{inspect(error)}")
+            :ignore
+        end
+
+        assert {:ok, _} =
+                 request(~c"https://client-cert.#{context.suite.domain}:#{context.port}/",
+                   cacerts: context.suite.chain ++ context.suite.cacerts,
+                   cert: X509.Certificate.to_der(context.suite.client),
+                   key: {:ECPrivateKey, X509.PrivateKey.to_der(context.suite.client_key)}
                  )
       end
     end
   else
-    Logger.warn("ECDSA certificates can't be tested on the current OTP version")
+    X509.Logger.warn("ECDSA certificates can't be tested on the current OTP version")
   end
 
   #
@@ -652,9 +871,11 @@ defmodule X509.Test.ServerTest do
     new_suite(context, {:rsa, 1024}, "rsa")
   end
 
-  # Setup for ECSA testing
-  defp ecdsa_suite(context) do
-    new_suite(context, {:ec, :secp256r1}, "ecdsa")
+  # Setup for ECDSA testing
+  if version(:ssl) >= [8, 2, 6, 2] and version(:ssl) != [9, 0, 0] do
+    defp ecdsa_suite(context) do
+      new_suite(context, {:ec, :secp256r1}, "ecdsa")
+    end
   end
 
   # Generate a test suite, update the CRL responder and start a test server

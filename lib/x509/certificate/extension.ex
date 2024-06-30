@@ -6,6 +6,8 @@ defmodule X509.Certificate.Extension do
 
   import X509.ASN1, except: [basic_constraints: 2, authority_key_identifier: 1]
 
+  alias X509.Util
+
   @typedoc "`:Extension` record, as used in Erlang's `:public_key` module"
   @type t :: X509.ASN1.record(:extension)
 
@@ -17,6 +19,8 @@ defmodule X509.Certificate.Extension do
           | :authority_key_identifier
           | :subject_alt_name
           | :crl_distribution_point
+          | :authority_information_access
+          | :ocsp_nocheck
 
   @typedoc "Supported values in the key usage extension"
   @type key_usage_value ::
@@ -37,13 +41,22 @@ defmodule X509.Certificate.Extension do
   """
   @type san_value :: String.t() | {atom(), charlist()}
 
+  @type aia_access_method ::
+          :ocsp
+          | :ca_issuers
+          | :time_stamping
+          | :ca_repository
+
+  # This OID is not defined in the :public_key ASN.1 headers
+  @ocsp_nocheck_oid {1, 3, 6, 1, 5, 5, 7, 48, 1, 5}
+
   @doc """
   The basic constraints extension identifies whether the subject of the
   certificate is a CA and the maximum depth of valid certification
   paths that include this certificate.
 
   This extension is always marked as critical for CA certificates, and
-  non-criticial when CA is set to false.
+  non-critical when CA is set to false.
 
   Examples:
 
@@ -237,11 +250,11 @@ defmodule X509.Certificate.Extension do
 
       iex> X509.Certificate.Extension.subject_alt_name(["www.example.com", "example.com"])
       {:Extension, {2, 5, 29, 17}, false,
-       [dNSName: 'www.example.com', dNSName: 'example.com']}
+       [dNSName: ~c"www.example.com", dNSName: ~c"example.com"]}
 
-      iex> X509.Certificate.Extension.subject_alt_name(emailAddress: 'user@example.com')
+      iex> X509.Certificate.Extension.subject_alt_name(emailAddress: ~c"user@example.com")
       {:Extension, {2, 5, 29, 17}, false,
-       [emailAddress: 'user@example.com']}
+       [emailAddress: ~c"user@example.com"]}
   """
   @spec subject_alt_name([san_value()]) :: t()
   def subject_alt_name(value) do
@@ -276,7 +289,7 @@ defmodule X509.Certificate.Extension do
       {:Extension, {2, 5, 29, 31}, false,
        [
          {:DistributionPoint,
-          {:fullName, [uniformResourceIdentifier: 'http://crl.example.org/root.crl']},
+          {:fullName, [uniformResourceIdentifier: ~c"http://crl.example.org/root.crl"]},
           :asn1_NOVALUE, :asn1_NOVALUE}
        ]}
   """
@@ -300,21 +313,229 @@ defmodule X509.Certificate.Extension do
   end
 
   @doc """
+  The authority information access extension indicates how to access
+  information and services for the issuer of the certificate in which the
+  extension appears.
+
+  Information and services may include on-line validation services and CA
+  policy data. This extension may be included in end entity or CA certificates.
+
+  This extension is marked as non-critical.
+
+  Example:
+
+      iex> X509.Certificate.Extension.authority_info_access(
+      ...>   ocsp: "http://ocsp.example.net/"
+      ...> )
+      {:Extension, {1, 3, 6, 1, 5, 5, 7, 1, 1}, false,
+       [
+         {:AccessDescription, {1, 3, 6, 1, 5, 5, 7, 48, 1},
+          {:uniformResourceIdentifier, "http://ocsp.example.net/"}}
+       ]}
+  """
+  # @doc since: "0.7.0"
+  @spec authority_info_access([{aia_access_method(), String.t()}]) :: t()
+  def authority_info_access(access_methods) do
+    extension(
+      extnID: oid(:"id-pe-authorityInfoAccess"),
+      critical: false,
+      extnValue: Enum.map(access_methods, &aia_access_method/1)
+    )
+  end
+
+  defp aia_access_method({:ocsp, uri}) do
+    access_description(
+      accessMethod: oid(:"id-ad-ocsp"),
+      accessLocation: {:uniformResourceIdentifier, uri}
+    )
+  end
+
+  defp aia_access_method({:ca_issuers, uri}) do
+    access_description(
+      accessMethod: oid(:"id-ad-caIssuers"),
+      accessLocation: {:uniformResourceIdentifier, uri}
+    )
+  end
+
+  defp aia_access_method({:time_stamping, uri}) do
+    access_description(
+      accessMethod: oid(:"id-ad-timeStamping"),
+      accessLocation: {:uniformResourceIdentifier, uri}
+    )
+  end
+
+  defp aia_access_method({:ca_repository, uri}) do
+    access_description(
+      accessMethod: oid(:"id-ad-caRepository"),
+      accessLocation: {:uniformResourceIdentifier, uri}
+    )
+  end
+
+  @doc """
+  The OCSP Nocheck extension indicates that the OCSP client can trust this
+  OCSP responder certificate for the lifetime of the certificate, and no
+  revocation checks are needed.
+
+  This extension has no value, it acts as a flag simply by being present in a
+  certificate's extension list.
+
+  This extension is marked as non-critical.
+
+  Example:
+
+      iex> X509.Certificate.Extension.ocsp_nocheck()
+      {:Extension, {1, 3, 6, 1, 5, 5, 7, 48, 1, 5}, false, <<5, 0>>}
+  """
+  # @doc since: "0.7.0"
+  @spec ocsp_nocheck() :: t()
+  def ocsp_nocheck() do
+    extension(
+      extnID: @ocsp_nocheck_oid,
+      critical: false,
+      extnValue: <<5, 0>>
+    )
+  end
+
+  @doc """
   Looks up the value of a specific extension in a list.
 
   The desired extension can be specified as an atom or an OID value. Returns
   `nil` if the specified extension is not present in the certificate.
   """
   @spec find([t()], extension_id() | :public_key.oid()) :: t() | nil
+  def find(:asn1_NOVALUE, _), do: nil
   def find(list, :basic_constraints), do: find(list, oid(:"id-ce-basicConstraints"))
   def find(list, :key_usage), do: find(list, oid(:"id-ce-keyUsage"))
   def find(list, :ext_key_usage), do: find(list, oid(:"id-ce-extKeyUsage"))
   def find(list, :subject_key_identifier), do: find(list, oid(:"id-ce-subjectKeyIdentifier"))
   def find(list, :authority_key_identifier), do: find(list, oid(:"id-ce-authorityKeyIdentifier"))
   def find(list, :subject_alt_name), do: find(list, oid(:"id-ce-subjectAltName"))
-  def find(list, :crl_distribution_points), do: find(list, oid(:"id-ce-cRLDistributionPoints"))
+
+  def find(list, :crl_distribution_points) do
+    case find(list, oid(:"id-ce-cRLDistributionPoints")) do
+      extension(extnValue: der) = ext when is_binary(der) ->
+        # Older OTP versions decoded this automatically, but newer ones don't...
+        extension(ext, extnValue: :public_key.der_decode(:CRLDistributionPoints, der))
+
+      crl_distribution_points ->
+        crl_distribution_points
+    end
+  end
+
+  def find(list, :authority_info_access), do: find(list, oid(:"id-pe-authorityInfoAccess"))
+  def find(list, :ocsp_nocheck), do: find(list, @ocsp_nocheck_oid)
 
   def find(list, extension_oid) do
     Enum.find(list, &match?(extension(extnID: ^extension_oid), &1))
+  end
+
+  @doc false
+  # Intended for internal use only
+  def to_der(list) when is_list(list) do
+    :public_key.der_encode(:OTPExtensions, Enum.map(list, &encode/1))
+  end
+
+  def to_der(extension() = ext) do
+    :public_key.der_encode(:Extension, encode(ext))
+  end
+
+  @doc false
+  # Intended for internal use only
+  def from_der!(der, type \\ :Extension)
+
+  def from_der!(der, :OTPExtensions) do
+    :public_key.der_decode(:OTPExtensions, der)
+    |> Enum.map(&decode/1)
+  end
+
+  def from_der!(der, :Extension) do
+    :public_key.der_decode(:Extension, der)
+    |> decode()
+  end
+
+  @doc false
+  # Intended for internal use only
+  def prepare(extension(extnID: oid(:"id-ce-cRLDistributionPoints"), extnValue: value) = ext)
+      when is_list(value) do
+    # Older OTP versions encoded this automatically, but newer ones don't...
+    if Util.app_version(:public_key) >= [1, 13, 3] do
+      encode(ext)
+    else
+      ext
+    end
+  end
+
+  def prepare(ext), do: ext
+
+  defp encode(extension(extnID: oid(:"id-ce-basicConstraints"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:BasicConstraints, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-keyUsage"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:KeyUsage, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-extKeyUsage"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:ExtKeyUsageSyntax, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-subjectKeyIdentifier"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:SubjectKeyIdentifier, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-authorityKeyIdentifier"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:AuthorityKeyIdentifier, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-subjectAltName"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:SubjectAltName, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-ce-cRLDistributionPoints"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:CRLDistributionPoints, value))
+  end
+
+  defp encode(extension(extnID: oid(:"id-pe-authorityInfoAccess"), extnValue: value) = ext) do
+    extension(ext, extnValue: :public_key.der_encode(:AuthorityInfoAccessSyntax, value))
+  end
+
+  defp encode(extension(extnID: @ocsp_nocheck_oid) = ext) do
+    ext
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-basicConstraints"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:BasicConstraints, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-keyUsage"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:KeyUsage, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-extKeyUsage"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:ExtKeyUsageSyntax, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-subjectKeyIdentifier"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:SubjectKeyIdentifier, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-authorityKeyIdentifier"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:AuthorityKeyIdentifier, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-subjectAltName"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:SubjectAltName, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-ce-cRLDistributionPoints"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:CRLDistributionPoints, der))
+  end
+
+  defp decode(extension(extnID: oid(:"id-pe-authorityInfoAccess"), extnValue: der) = ext) do
+    extension(ext, extnValue: :public_key.der_decode(:AuthorityInfoAccessSyntax, der))
+  end
+
+  defp decode(extension(extnID: @ocsp_nocheck_oid) = ext) do
+    ext
   end
 end

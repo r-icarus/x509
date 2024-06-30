@@ -43,6 +43,10 @@ defmodule Mix.Tasks.X509.TestServer do
     alternate_cacertfile = write_cacerts!("alternate_cacerts.pem", suite.alternate_cacerts)
     Mix.shell().info("Secondary CA certificate store: #{alternate_cacertfile}")
 
+    client_certfile = write_cert!("client.pem", suite.client)
+    write_key!("client_key.pem", suite.client_key)
+    Mix.shell().info("Client certificate and key: #{client_certfile} / [...]/client_key.pem")
+
     # Update the CRL server with the generated CRLs
     suite.crls
     |> Enum.each(fn {path, crl} ->
@@ -60,7 +64,7 @@ defmodule Mix.Tasks.X509.TestServer do
     Sample invocation of `curl`:
       curl --cacert #{cacertfile} https://valid.#{suite.domain}:#{port}/
 
-    Please refer to the documenation for X509.Test.Suite for a list of
+    Please refer to the documentation for X509.Test.Suite for a list of
     available endpoints and their expected behaviour.
     """)
 
@@ -75,6 +79,18 @@ defmodule Mix.Tasks.X509.TestServer do
 
     path = Path.join(System.tmp_dir!(), filename)
     File.write!(path, pem)
+    path
+  end
+
+  defp write_cert!(filename, cert) do
+    path = Path.join(System.tmp_dir!(), filename)
+    File.write!(path, X509.Certificate.to_pem(cert))
+    path
+  end
+
+  defp write_key!(filename, key) do
+    path = Path.join(System.tmp_dir!(), filename)
+    File.write!(path, X509.PrivateKey.to_pem(key))
     path
   end
 

@@ -4,6 +4,8 @@ defmodule X509.Test.Server do
   """
   use GenServer
 
+  alias X509.Util
+
   @doc """
   Starts a test server for the given test suite.
 
@@ -78,16 +80,24 @@ defmodule X509.Test.Server do
   end
 
   defp worker(socket, suite, response) do
-    case :ssl.ssl_accept(
-           socket,
-           [
-             active: false,
-             sni_fun: X509.Test.Suite.sni_fun(suite),
-             reuse_sessions: false,
-             log_alert: false
-           ],
-           1000
-         ) do
+    # Default certificates and keys, which are overriden by sni_fun according
+    # to the specific test case. OTP 27 requires that valid certificates and
+    # keys are passed to the listener socket.
+    default_cert = X509.Certificate.to_der(suite.valid)
+    default_key = {:PrivateKeyInfo, X509.PrivateKey.to_der(suite.server_key, wrap: true)}
+    default_cacerts = suite.chain
+
+    opts =
+      [
+        active: false,
+        cert: default_cert,
+        key: default_key,
+        cacerts: default_cacerts,
+        sni_fun: X509.Test.Suite.sni_fun(suite),
+        reuse_sessions: false
+      ] ++ log_opts()
+
+    case handshake(socket, opts, 1000) do
       {:ok, ssl_socket} ->
         flush(ssl_socket)
         :ssl.send(ssl_socket, response)
@@ -98,6 +108,16 @@ defmodule X509.Test.Server do
     end
   end
 
+  if Code.ensure_loaded?(:ssl) and function_exported?(:ssl, :handshake, 3) do
+    defp handshake(socket, opts, timeout) do
+      :ssl.handshake(socket, opts, timeout)
+    end
+  else
+    defp handshake(socket, opts, timeout) do
+      :ssl.ssl_accept(socket, opts, timeout)
+    end
+  end
+
   defp flush(ssl_socket) do
     case :ssl.recv(ssl_socket, 0, 100) do
       {:ok, _data} ->
@@ -105,6 +125,14 @@ defmodule X509.Test.Server do
 
       _done ->
         :done
+    end
+  end
+
+  def log_opts do
+    if Util.app_version(:ssl) >= [9, 3] do
+      [log_level: :emergency]
+    else
+      [log_alert: false]
     end
   end
 end

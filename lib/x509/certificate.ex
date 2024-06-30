@@ -397,22 +397,30 @@ defmodule X509.Certificate do
         end,
       subject:
         case subject_rdn do
-          {:rdnSequence, _} -> subject_rdn
-          name when is_binary(name) -> RDNSequence.new(name, :otp)
+          {:rdnSequence, [[{:AttributeTypeAndValue, _oid, value} | _] | _]}
+          when is_binary(value) ->
+            :pubkey_cert_records.transform(subject_rdn, :decode)
+
+          {:rdnSequence, _} ->
+            subject_rdn
+
+          name when is_binary(name) ->
+            RDNSequence.new(name, :otp)
         end,
       subjectPublicKeyInfo: PublicKey.wrap(public_key, :OTPSubjectPublicKeyInfo),
       extensions:
         template.extensions
         |> Keyword.values()
         |> Enum.reject(&(&1 == false))
+        |> Enum.map(&Extension.prepare/1)
     )
   end
 
   # If the template includes the Subject Key Identifier extension, sets the
   # value based on the given public key value
   defp update_ski(template, public_key) do
-    Map.update!(template, :extensions, fn extentions ->
-      Keyword.update(extentions, :subject_key_identifier, false, fn
+    Map.update!(template, :extensions, fn extensions ->
+      Keyword.update(extensions, :subject_key_identifier, false, fn
         true -> Extension.subject_key_identifier(public_key)
         false -> false
       end)

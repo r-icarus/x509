@@ -1,7 +1,8 @@
 defmodule X509.MixProject do
   use Mix.Project
 
-  @version "0.5.4"
+  @source_url "https://github.com/voltone/x509"
+  @version "0.8.9"
 
   def project do
     [
@@ -14,21 +15,27 @@ defmodule X509.MixProject do
       description: description(),
       package: package(),
       docs: docs(),
-      source_url: "https://github.com/voltone/x509"
+      xref: [exclude: [IEx, :epp_dodger]]
     ]
   end
 
-  # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:crypto, :public_key]
+      extra_applications: extra_applications(Mix.env())
     ]
   end
 
-  # Run "mix help deps" to learn about dependencies.
+  defp extra_applications(:test) do
+    extra_applications(:prod) ++ [:inets]
+  end
+
+  defp extra_applications(_env) do
+    [:crypto, :public_key, :logger, :ssl]
+  end
+
   defp deps do
     [
-      {:ex_doc, "~> 0.19", only: :dev}
+      {:ex_doc, ">= 0.0.0", only: :dev}
     ]
   end
 
@@ -40,16 +47,21 @@ defmodule X509.MixProject do
   defp package do
     [
       maintainers: ["Bram Verburg"],
-      licenses: ["BSD 3-Clause"],
-      links: %{"GitHub" => "https://github.com/voltone/x509"}
+      licenses: ["BSD-3-Clause"],
+      links: %{
+        "Changelog" => "#{@source_url}/blob/master/CHANGELOG.md",
+        "GitHub" => @source_url
+      }
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      extras: ["README.md"],
-      source_ref: "v#{@version}"
+      extras: ["CHANGELOG.md", "README.md"],
+      source_ref: "v#{@version}",
+      source_url: @source_url,
+      formatters: ["html"]
     ]
   end
 end
